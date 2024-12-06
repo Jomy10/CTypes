@@ -4,7 +4,7 @@ set -e
 set -x
 
 for file in tests/*.c; do
-  clang -g $file -Wno-nullability-completeness -o test
+  clang -g $file -Wno-nullability-completeness -fsanitize=address -o test
   ./test
 done
 

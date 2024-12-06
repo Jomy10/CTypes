@@ -80,16 +80,17 @@ int main(void) {
 
   // Map non-known size
   int idx = 0;
+  iter = malloc(sizeof(iter_t));
   *iter = (iter_t) {
     .opt = 0,
     .data = &idx,
     .next = nextUpTo10,
     .type_size = sizeof(int),
-    .free = NULL,
+    .free = (IteratorFreeFn)free,
   };
   arr = array_create(sizeof(int));
 
-  iter_map(iter, arr, addOne);
+  assert(iter_map(iter, arr, addOne));
 
   for (int i = 0; i < 9; i++)
     assert(INTVAL(array_get(arr, i)) == i + 2);
@@ -116,6 +117,22 @@ int main(void) {
   assert(INTVAL(iter_max(iter, intCmp)) == 9);
 
   iter_destroy(iter);
+
+  // Zip
+  iter = array_createIterator(arr);
+  iter_t* iter2 = array_createIterator(arr);
+
+  iter_t* zipped = iter_zipped(iter, iter2);
+
+  void* value;
+  while ((value = iter_next(zipped))) {
+    zippedValue_t* zippedValue = (zippedValue_t*)value;
+    assert(INTVAL(zippedValue->left) == INTVAL(zippedValue->right));
+  }
+
+  iter_destroy(iter);
+  iter_destroy(iter2);
+
   array_destroy(arr);
 
   return 0;

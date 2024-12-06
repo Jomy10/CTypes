@@ -96,10 +96,6 @@ array_t* array_sort(array_t* arr, ArrayCmpFn compare, ArraySortFn sort);
 /// Returns `arr`
 array_t* array_reverse(array_t* arr);
 
-// TODO: Iterable_map
-//      --> Iterable_get(Iterable* iter)
-//          if (typeof(iter) == Array_t*) { Array_get() } ...
-
 #ifdef CT_ARRAY_IMPL
 
 #include <stdlib.h>

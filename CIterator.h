@@ -4,10 +4,11 @@
 #include "CArray.h"
 #include <stddef.h>
 
-// TODO
+#undef __nonnull
 #ifndef __nonnull
 #define __nonnull
 #endif
+#undef __nullable
 #ifndef __nullable
 #define __nullable
 #endif
@@ -15,9 +16,9 @@
 typedef int(*CmpFn)(const void* a, const void* b);
 
 enum IteratorOptionSet {
-  ITER_CONTIGUOUS = 0x0001,
-  ITER_KNOWNSIZE = 0x0010,
-  ITER_ENUMERATED = 0x0100,
+  ITER_CONTIGUOUS = 0b0001,
+  ITER_KNOWNSIZE = 0b0010,
+  ITER_ENUMERATED = 0b0100,
 };
 
 typedef struct Iterator {
@@ -34,14 +35,17 @@ typedef struct Iterator {
   /// available if `ITER_CONTIGUOUS`
   void* __nullable contiguous_buffer;
   /// Optional free
-  void(* __nullable free)(void*);
+  void(* __nullable free)(struct Iterator*);
 } iter_t;
+
+typedef void(*IteratorFreeFn)(iter_t*);
 
 typedef struct EnumeratedValue {
   long i;
-  void* inner_data;
-  void(* __nullable inner_free)(void*);
-  void*(* __nonnull inner_next)(void*);
+  iter_t* inner_iter;
+  // void* inner_data;
+  // void(* __nullable inner_free)(iter_t*);
+  // void*(* __nonnull inner_next)(void*);
 } enumeratedValue_t;
 
 // typedef struct EnumeratedIteratorData {
@@ -54,6 +58,17 @@ typedef struct ArrayIterData {
   array_t* storage;
   long idx;
 } arrayiter_t;
+
+typedef struct ZippedValue {
+  void* left;
+  void* right;
+} zippedValue_t;
+
+typedef struct ZippedIteratorValue {
+  iter_t* left;
+  iter_t* right;
+  zippedValue_t value;
+} zippedIterValue_t;
 
 #ifdef __cplusplus
 extern "C" {
@@ -111,6 +126,8 @@ const void* iter_min(iter_t* iter, CmpFn compare);
 /// `iter` will be invalidated
 iter_t* iter_enumerated(iter_t* iter);
 
+iter_t* iter_zipped(iter_t* left, iter_t* right);
+
 #ifdef CT_ITERATOR_IMPL
 
 #include <string.h>
@@ -138,7 +155,7 @@ iter_t* array_createIterator(array_t* arr) {
   iter->idx = &arriter->idx;
   iter->contiguous_buffer = arr->data;
 
-  iter->free = free;
+  iter->free = (void(*)(iter_t*)) free;
 
   return iter;
 }
@@ -184,6 +201,7 @@ array_t* iter_map(iter_t* iter, array_t* outArr, void(*mutate)(const void* in, v
   iter_t* it = iter;
   if ((iter->opt & ITER_ENUMERATED) == 0) {
     it = iter_enumerated(iter);
+    if (it == NULL) return NULL;
   }
 
   const void* value;
@@ -200,7 +218,6 @@ array_t* iter_map(iter_t* iter, array_t* outArr, void(*mutate)(const void* in, v
     size_t cap = 10;
     array_reserveAtLeast(outArr, cap);
     while ((value = iter_next(it))) {
-    // while ((value = iter_next(it))) {
       if (*(it->idx) == cap) {
         cap *= 2;
         array_grow(outArr, cap);
@@ -313,29 +330,76 @@ const void* iter_min(iter_t* iter, CmpFn compare);
 void* _iter_enumerated_next(void* data) {
   enumeratedValue_t* val = (enumeratedValue_t*)data;
   val->i += 1;
-  return val->inner_next(val->inner_data);
+  return val->inner_iter->next(val->inner_iter->data);
 }
+#define BYTE_TO_BINARY_PATTERN "%c%c%c%c%c%c%c%c"
+#define BYTE_TO_BINARY(byte)  \
+  ((byte) & 0x80 ? '1' : '0'), \
+  ((byte) & 0x40 ? '1' : '0'), \
+  ((byte) & 0x20 ? '1' : '0'), \
+  ((byte) & 0x10 ? '1' : '0'), \
+  ((byte) & 0x08 ? '1' : '0'), \
+  ((byte) & 0x04 ? '1' : '0'), \
+  ((byte) & 0x02 ? '1' : '0'), \
+  ((byte) & 0x01 ? '1' : '0')
 
-void _iter_enumerated_free(void* data) {
-  enumeratedValue_t* val = (enumeratedValue_t*)data;
-  if (val->inner_free)
-    val->inner_free(val->inner_data);
-  free(val);
+void _iter_enumerated_free(iter_t* iter) {
+  enumeratedValue_t* val = (enumeratedValue_t*)iter->data;
+  if (val->inner_iter->free)
+    val->inner_iter->free(val->inner_iter);
+  free(iter);
 }
 
 iter_t* iter_enumerated(iter_t* iter) {
   if (iter->opt & ITER_ENUMERATED) return iter;
-  iter->opt |= ITER_ENUMERATED;
-  enumeratedValue_t* val = malloc(sizeof(enumeratedValue_t));
-  val->i = -1;
-  val->inner_data = iter->data;
-  val->inner_free = iter->free;
-  val->inner_next = iter->next;
+  iter_t* newIter = malloc(sizeof(iter_t) + sizeof(enumeratedValue_t));
+  if (newIter == NULL) return NULL;
+  *newIter = *iter;
+  newIter->opt |= ITER_ENUMERATED;
+  enumeratedValue_t* val = (enumeratedValue_t*)(((void*)newIter) + sizeof(iter_t)); //malloc(sizeof(enumeratedValue_t));
+  val->i = (long) -1;
+  val->inner_iter = iter;
+  // val->inner_free = iter->free;
+  // val->inner_next = iter->next;
 
-  iter->data = (void*)val;
-  iter->idx = &val->i;
-  iter->free = _iter_enumerated_free;
-  iter->next = _iter_enumerated_next;
+  // iter_t* new_iter = malloc(size)
+  newIter->data = (void*)val;
+  newIter->idx = &val->i;
+  newIter->free = _iter_enumerated_free;
+  newIter->next = _iter_enumerated_next;
+
+  return newIter;
+}
+
+void* _iter_zipped_next(void* _data) {
+  zippedIterValue_t* data = (zippedIterValue_t*)_data;
+  data->value.left = data->left->next(data->left->data);
+  data->value.right = data->right->next(data->right->data);
+  if (data->value.left == NULL && data->value.right == NULL)
+    return NULL;
+  return (void*)(&data->value);
+}
+
+void _iter_zipped_free(iter_t* iter) {
+  zippedIterValue_t* data = (zippedIterValue_t*)iter->data;
+
+  iter_destroy(data->left);
+  iter_destroy(data->right);
+  free(iter);
+}
+
+iter_t* iter_zipped(iter_t* left, iter_t* right) {
+  iter_t* iter = malloc(sizeof(iter_t) + sizeof(zippedIterValue_t));
+
+  zippedIterValue_t* data = (zippedIterValue_t*)(((void*)iter) + sizeof(iter_t));
+  data->left = left;
+  data->right = right;
+
+  iter->opt = 0;
+  iter->data = data;
+  iter->next = _iter_zipped_next;
+  iter->free = _iter_zipped_free;
+  iter->type_size = sizeof(zippedValue_t);
 
   return iter;
 }
